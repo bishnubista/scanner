@@ -70,8 +70,10 @@ COPY --from=builder /app/target/release/scanner-api /app/scanner-api
 COPY techniques /app/techniques
 COPY schemas /app/schemas
 
-# Create safe-mcp directory (will be populated at runtime or mounted)
-RUN mkdir -p /app/safe-mcp/techniques /app/safe-mcp/mitigations && \
+# Clone safe-mcp knowledge base (techniques, mitigations, README)
+# This provides the context the LLM needs for vulnerability detection
+RUN git clone --depth 1 https://github.com/SAFE-MCP/safe-mcp.git /app/safe-mcp && \
+    rm -rf /app/safe-mcp/.git && \
     chown -R scanner:scanner /app
 
 USER scanner
