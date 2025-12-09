@@ -10,6 +10,8 @@ use engine::{
 use serde::Serialize;
 use reqwest::StatusCode;
 
+mod sarif;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "safe-mcp-scan",
@@ -70,8 +72,14 @@ struct Args {
     #[arg(long)]
     max_file_bytes: Option<u64>,
     /// Output JSON instead of human-readable summary
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["sarif", "sarif_file"])]
     json: bool,
+    /// Output SARIF 2.1.0 format to stdout (for GitHub Code Scanning)
+    #[arg(long, conflicts_with_all = ["json", "sarif_file"])]
+    sarif: bool,
+    /// Write SARIF 2.1.0 format to file (for GitHub Code Scanning)
+    #[arg(long, conflicts_with_all = ["json", "sarif"], value_name = "PATH")]
+    sarif_file: Option<PathBuf>,
     /// Perform a second-pass LLM review to filter findings (OpenAI only)
     #[arg(long)]
     llm_review: bool,
@@ -176,6 +184,19 @@ async fn run(args: Args) -> Result<i32, String> {
         let output = to_output(&result)?;
         let json = serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?;
         println!("{json}");
+    } else if args.sarif || args.sarif_file.is_some() {
+        let technique = load_technique_for_sarif(&args)?;
+        let sarif_doc = sarif::build_sarif(&result, &technique, &args.technique_id);
+        let sarif_json =
+            serde_json::to_string_pretty(&sarif_doc).map_err(|e| e.to_string())?;
+
+        if let Some(path) = &args.sarif_file {
+            std::fs::write(path, &sarif_json)
+                .map_err(|e| format!("failed to write SARIF file: {e}"))?;
+            eprintln!("SARIF written to: {}", path.display());
+        } else {
+            println!("{sarif_json}");
+        }
     } else {
         print_human(&result);
     }
@@ -196,6 +217,27 @@ fn post_process_findings(
     analysis.status = status;
     analysis.summary = summary;
     analysis
+}
+
+/// Load technique metadata for SARIF output.
+///
+/// SARIF rules need the full technique specification (name, description, severity)
+/// to populate rule metadata in the output.
+fn load_technique_for_sarif(args: &Args) -> Result<engine::Technique, String> {
+    let validation = engine::validate_techniques(&args.spec_dir, &args.schema)
+        .map_err(|e| format!("failed to load techniques: {e}"))?;
+
+    validation
+        .techniques
+        .into_iter()
+        .find(|t| t.id == args.technique_id)
+        .ok_or_else(|| {
+            format!(
+                "technique {} not found in {}",
+                args.technique_id,
+                args.spec_dir.display()
+            )
+        })
 }
 
 async fn run_llm_review(

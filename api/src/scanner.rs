@@ -88,13 +88,31 @@ pub async fn run_scan(
 
     let mut all_findings = Vec::new();
     let mut files_scanned = 0;
+    let mut techniques_succeeded = 0;
+    let mut techniques_failed = 0;
+
+    // Log config paths for debugging
+    info!(
+        techniques_dir = %config.techniques_dir.display(),
+        schema_path = %config.schema_path.display(),
+        safe_mcp_path = %config.safe_mcp_path.display(),
+        provider = %config.provider,
+        "Scanner configuration"
+    );
 
     // Run scan for each technique
     for technique_id in &technique_ids {
         match scan_technique(config, &repo_path, technique_id, changed_files).await {
             Ok(result) => {
+                info!(
+                    technique_id = %technique_id,
+                    findings_count = result.findings.len(),
+                    files_scanned = result.files_scanned,
+                    "Technique scan completed"
+                );
                 all_findings.extend(result.findings);
                 files_scanned = files_scanned.max(result.files_scanned);
+                techniques_succeeded += 1;
             }
             Err(e) => {
                 warn!(
@@ -102,9 +120,18 @@ pub async fn run_scan(
                     error = %e,
                     "Failed to scan technique, continuing with others"
                 );
+                techniques_failed += 1;
             }
         }
     }
+
+    info!(
+        total_findings = all_findings.len(),
+        files_scanned = files_scanned,
+        techniques_succeeded = techniques_succeeded,
+        techniques_failed = techniques_failed,
+        "Scan summary"
+    );
 
     // Temp dir is automatically cleaned up when dropped
     Ok(ScanResult {
