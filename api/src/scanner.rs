@@ -2,12 +2,14 @@
 //!
 //! This module handles:
 //! 1. Cloning repositories to temp directories
-//! 2. Running technique detection via the engine
+//! 2. Running technique detection via the engine (in parallel)
 //! 3. Returning findings in API format
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 
+use futures::future::join_all;
 use tempfile::TempDir;
 use tracing::{info, warn};
 
@@ -85,13 +87,8 @@ pub async fn run_scan(
 
     info!(
         techniques_count = technique_ids.len(),
-        "Running technique scans"
+        "Running technique scans in parallel"
     );
-
-    let mut all_findings = Vec::new();
-    let mut files_scanned = 0;
-    let mut techniques_succeeded = 0;
-    let mut techniques_failed = 0;
 
     // Log config paths for debugging
     info!(
@@ -102,18 +99,48 @@ pub async fn run_scan(
         "Scanner configuration"
     );
 
-    // Run scan for each technique
-    for technique_id in &technique_ids {
-        match scan_technique(config, &repo_path, technique_id, changed_files).await {
-            Ok(result) => {
+    // Wrap config and repo_path in Arc for sharing across tasks
+    let config = Arc::new(config.clone());
+    let repo_path = Arc::new(repo_path);
+    let changed_files: Option<Arc<[String]>> = changed_files.map(|f| f.to_vec().into());
+
+    // Spawn all technique scans in parallel
+    let scan_futures: Vec<_> = technique_ids
+        .iter()
+        .map(|technique_id| {
+            let config = Arc::clone(&config);
+            let repo_path = Arc::clone(&repo_path);
+            let technique_id = technique_id.clone();
+            let changed_files = changed_files.clone();
+
+            async move {
+                let cf_slice: Option<&[String]> = changed_files.as_deref();
+                let result = scan_technique(&config, &repo_path, &technique_id, cf_slice).await;
+                (technique_id, result)
+            }
+        })
+        .collect();
+
+    // Wait for all scans to complete
+    let results = join_all(scan_futures).await;
+
+    // Aggregate results
+    let mut all_findings = Vec::new();
+    let mut files_scanned = 0;
+    let mut techniques_succeeded = 0;
+    let mut techniques_failed = 0;
+
+    for (technique_id, result) in results {
+        match result {
+            Ok(scan_result) => {
                 info!(
                     technique_id = %technique_id,
-                    findings_count = result.findings.len(),
-                    files_scanned = result.files_scanned,
+                    findings_count = scan_result.findings.len(),
+                    files_scanned = scan_result.files_scanned,
                     "Technique scan completed"
                 );
-                all_findings.extend(result.findings);
-                files_scanned = files_scanned.max(result.files_scanned);
+                all_findings.extend(scan_result.findings);
+                files_scanned = files_scanned.max(scan_result.files_scanned);
                 techniques_succeeded += 1;
             }
             Err(e) => {
