@@ -59,6 +59,7 @@ pub async fn run_scan(
     commit_sha: &str,
     techniques: Option<&[String]>,
     changed_files: Option<&[String]>,
+    github_token: Option<&str>,
 ) -> Result<ScanResult, Box<dyn std::error::Error + Send + Sync>> {
     // Create temp directory for cloning
     let temp_dir = TempDir::new()?;
@@ -67,11 +68,12 @@ pub async fn run_scan(
     info!(
         repository_url = %repository_url,
         commit_sha = %commit_sha,
+        has_token = github_token.is_some(),
         "Cloning repository"
     );
 
     // Clone the repository
-    clone_repository(repository_url, commit_sha, &repo_path).await?;
+    clone_repository(repository_url, commit_sha, &repo_path, github_token).await?;
 
     // Get list of techniques to check
     let technique_ids = if let Some(t) = techniques {
@@ -145,10 +147,18 @@ async fn clone_repository(
     url: &str,
     commit_sha: &str,
     dest: &PathBuf,
+    github_token: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Build clone URL with token if provided (for private repos)
+    let clone_url = if let Some(token) = github_token {
+        inject_token_into_url(url, token)
+    } else {
+        url.to_string()
+    };
+
     // Clone with depth 1 for efficiency
     let output = Command::new("git")
-        .args(["clone", "--depth", "1", url, dest.to_str().unwrap()])
+        .args(["clone", "--depth", "1", &clone_url, dest.to_str().unwrap()])
         .output()?;
 
     if !output.status.success() {
@@ -158,7 +168,7 @@ async fn clone_repository(
 
     // Checkout specific commit if not HEAD
     if commit_sha != "HEAD" && !commit_sha.is_empty() {
-        // Fetch the specific commit
+        // Fetch the specific commit (use authenticated URL if we have a token)
         let fetch_output = Command::new("git")
             .current_dir(dest)
             .args(["fetch", "--depth", "1", "origin", commit_sha])
@@ -181,6 +191,21 @@ async fn clone_repository(
     }
 
     Ok(())
+}
+
+/// Inject GitHub token into HTTPS URL for authenticated access.
+/// Converts: https://github.com/owner/repo.git
+/// To:       https://x-access-token:TOKEN@github.com/owner/repo.git
+fn inject_token_into_url(url: &str, token: &str) -> String {
+    if url.starts_with("https://github.com") {
+        url.replace("https://github.com", &format!("https://x-access-token:{}@github.com", token))
+    } else if url.starts_with("https://") {
+        // Generic HTTPS URL - insert token after https://
+        url.replace("https://", &format!("https://x-access-token:{}@", token))
+    } else {
+        // Non-HTTPS URL (e.g., SSH), return as-is
+        url.to_string()
+    }
 }
 
 fn get_default_techniques(config: &ScannerConfig) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {

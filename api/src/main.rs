@@ -51,6 +51,9 @@ struct ScanRequest {
     techniques: Option<Vec<String>>,
     #[serde(default)]
     changed_files: Option<Vec<String>>,
+    /// GitHub token for private repository access (e.g., installation token)
+    #[serde(default)]
+    github_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,7 +133,7 @@ async fn scan_handler(
     );
 
     // Run the scan
-    match scanner::run_scan(&state.scanner_config, &request.repository_url, &request.commit_sha, request.techniques.as_deref(), request.changed_files.as_deref()).await {
+    match scanner::run_scan(&state.scanner_config, &request.repository_url, &request.commit_sha, request.techniques.as_deref(), request.changed_files.as_deref(), request.github_token.as_deref()).await {
         Ok(result) => {
             let duration_ms = start_time.elapsed().as_millis() as u64;
 
