@@ -74,6 +74,9 @@ COPY schemas /app/schemas
 # This provides the context the LLM needs for vulnerability detection
 RUN git clone --depth 1 https://github.com/SAFE-MCP/safe-mcp.git /app/safe-mcp && \
     rm -rf /app/safe-mcp/.git && \
+    # Create prioritized-techniques.md if it doesn't exist (required by engine)
+    echo "| Technique ID | Name |" > /app/safe-mcp/techniques/prioritized-techniques.md && \
+    echo "|--------------|------|" >> /app/safe-mcp/techniques/prioritized-techniques.md && \
     chown -R scanner:scanner /app
 
 USER scanner
