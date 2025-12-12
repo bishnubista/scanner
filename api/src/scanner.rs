@@ -11,7 +11,12 @@ use std::sync::Arc;
 
 use futures::future::join_all;
 use tempfile::TempDir;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
+
+/// Maximum number of techniques to scan concurrently.
+/// Limited to avoid hitting OpenAI rate limits (200k TPM).
+const MAX_CONCURRENT_TECHNIQUES: usize = 2;
 
 use crate::Finding;
 
@@ -104,7 +109,15 @@ pub async fn run_scan(
     let repo_path = Arc::new(repo_path);
     let changed_files: Option<Arc<[String]>> = changed_files.map(|f| f.to_vec().into());
 
-    // Spawn all technique scans in parallel
+    // Semaphore to limit concurrent API calls (avoid rate limits)
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TECHNIQUES));
+
+    info!(
+        max_concurrent = MAX_CONCURRENT_TECHNIQUES,
+        "Running technique scans with concurrency limit"
+    );
+
+    // Spawn technique scans with limited concurrency
     let scan_futures: Vec<_> = technique_ids
         .iter()
         .map(|technique_id| {
@@ -112,8 +125,11 @@ pub async fn run_scan(
             let repo_path = Arc::clone(&repo_path);
             let technique_id = technique_id.clone();
             let changed_files = changed_files.clone();
+            let semaphore = Arc::clone(&semaphore);
 
             async move {
+                // Acquire semaphore permit before scanning
+                let _permit = semaphore.acquire().await.unwrap();
                 let cf_slice: Option<&[String]> = changed_files.as_deref();
                 let result = scan_technique(&config, &repo_path, &technique_id, cf_slice).await;
                 (technique_id, result)
